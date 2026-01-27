@@ -95,24 +95,40 @@ def load_applications():
 
 
 def run_pipeline_local(image_path: str, slots: list, region: list = None, price: int = None):
-    """Run the pipeline locally. Returns result and segment images."""
-    from pipeline_v2 import ProductFinderV2, PipelineConfig
+    """
+    Run the pipeline locally. Returns result and segment images.
+    
+    Includes fallback logic:
+    - If avg confidence < 0.4 OR no segments found → use fallback
+    - Fallback Step 1: Search with relaxed metadata (no region/price filter)
+    - Fallback Step 2: Whole-image similarity search (lowest threshold)
+    """
+    import time
+    from pipeline_v2 import ProductFinderV2, PipelineConfig, PipelineResult
+    from supabase_search import SlotResult
+    
+    FALLBACK_THRESHOLD = 0.4  # Trigger fallback if avg confidence below this
     
     config = PipelineConfig(
         default_slots=slots,
-        results_per_slot=3,
+        results_per_slot=10,
         region=region,
         price=price
     )
     finder = ProductFinderV2(config)
     
-    # Run segmentation first to capture segment images
+    total_start = time.time()
+    timing = {}
+    
+    # Step 1: Run segmentation ONCE
+    t0 = time.time()
     segmented_objects = finder.segmenter.segment_image(
         image_source=image_path,
         prompts=slots,
         use_cache=True,
         save_outputs=False
     )
+    timing['sam3_segmentation'] = time.time() - t0
     
     # Store segment images for display (base64)
     segment_images = {}
@@ -125,10 +141,128 @@ def run_pipeline_local(image_path: str, slots: list, region: list = None, price:
                 'class_name': obj.class_name
             }
     
-    # Run full pipeline
-    result = finder.run(image_path, slots, region, price)
+    # Check if we need fallback
+    avg_confidence = sum(obj.confidence for obj in segmented_objects) / max(len(segmented_objects), 1)
+    use_fallback = (
+        config.enable_fallback and 
+        (len(segmented_objects) == 0 or avg_confidence < FALLBACK_THRESHOLD)
+    )
+    
+    # Step 2: Generate embeddings
+    t0 = time.time()
+    if segmented_objects:
+        embeddings = finder.voyage.embed_segmented_objects(
+            segmented_objects,
+            include_class_text=True,
+            input_type="query"
+        )
+    else:
+        embeddings = []
+    timing['voyage_embeddings'] = time.time() - t0
+    
+    # Step 3: Run similarity search
+    t0 = time.time()
+    
+    if use_fallback or len(embeddings) == 0:
+        # Fallback search strategy
+        slot_results = _run_fallback_search(finder, segmented_objects, embeddings, region, price)
+    else:
+        # Normal: Search each slot in parallel
+        # Prepare slots data
+        slots_data = []
+        for obj, emb in zip(segmented_objects, embeddings):
+            slots_data.append({
+                'name': obj.class_name,
+                'embedding': emb.embedding,
+                'confidence': obj.confidence
+            })
+        
+        # Deduplicate by slot name (keep highest confidence)
+        unique_slots = {}
+        for slot in slots_data:
+            name = slot['name'].lower()
+            if name not in unique_slots or slot['confidence'] > unique_slots[name]['confidence']:
+                unique_slots[name] = slot
+        
+        # Run parallel search
+        if unique_slots:
+            slot_results = finder.search.search_all_slots_parallel(
+                slots=list(unique_slots.values()),
+                region=region,
+                price=price,
+                match_count=config.results_per_slot,
+                min_confidence=config.min_confidence
+            )
+        else:
+            slot_results = {}
+    
+    timing['supabase_search'] = time.time() - t0
+    
+    # Build result
+    total_time = time.time() - total_start
+    timing['total'] = total_time
+    
+    result = PipelineResult(
+        image_source=image_path,
+        slots=slot_results,
+        fallback_used=use_fallback,
+        timing=timing,
+        total_time=total_time
+    )
     
     return result, segment_images
+
+
+def _run_fallback_search(finder, objects, embeddings, region, price):
+    """
+    Fallback search when confidence is low.
+    
+    Strategy (per V2 spec):
+    1. First try with REDUCED metadata restrictions (no region/price filter)
+    2. If still insufficient, switch to pure whole-image similarity search
+    """
+    from supabase_search import SlotResult
+    
+    if not embeddings:
+        return {}
+    
+    # Use highest confidence embedding (not just first)
+    best_idx = max(range(len(objects)), key=lambda i: objects[i].confidence)
+    best_embedding = embeddings[best_idx].embedding
+    
+    # Step 1: Try search with RELAXED metadata (no region/price)
+    relaxed_results = finder.search.search_by_embedding(
+        embedding=best_embedding,
+        application=None,  # No application filter
+        region=None,       # No region filter  
+        price=None,        # No price filter
+        match_count=12,
+        similarity_threshold=0.3
+    )
+    
+    if len(relaxed_results) >= 6:
+        # Got enough results with relaxed filters
+        return {
+            'fallback': SlotResult(
+                slot_name='Similar Products',
+                confidence=objects[best_idx].confidence,
+                results=relaxed_results
+            )
+        }
+    
+    # Step 2: Pure whole-image similarity search (lowest threshold)
+    results = finder.search.search_fallback(
+        embedding=best_embedding,
+        match_count=12
+    )
+    
+    return {
+        'fallback': SlotResult(
+            slot_name='Similar Products',
+            confidence=0.0,
+            results=results
+        )
+    }
 
 
 def main():
@@ -243,10 +377,10 @@ def main():
                     st.error(f"Failed to load image: {e}")
         
         if image:
-            st.image(image, caption="Input Image", use_container_width=True)
+            st.image(image, caption="Input Image", width="stretch")
             
             # Process button
-            if st.button("Find Products", type="primary", use_container_width=True):
+            if st.button("Find Products", type="primary"):
                 if not selected_apps:
                     st.error("Please select at least one application type")
                 else:
@@ -331,35 +465,38 @@ def main():
                             if segment_key in segments:
                                 seg_data = segments[segment_key]
                                 # Display base64 image
-                                st.image(seg_data['base64'], use_container_width=True)
+                                st.image(seg_data['base64'], width="stretch")
                             else:
                                 st.info("No segment")
                         
                         with prod_col:
                             st.caption("Similar Products")
                             if results:
-                                # Display products in columns
-                                cols = st.columns(min(len(results), 3))
-                                for i, product in enumerate(results[:3]):
-                                    with cols[i]:
-                                        with st.container():
-                                            # Thumbnail
-                                            thumb_url = product.get('thumbnail_url')
-                                            if thumb_url:
-                                                try:
-                                                    st.image(thumb_url, use_container_width=True)
-                                                except:
-                                                    st.image("https://via.placeholder.com/150?text=No+Image", use_container_width=True)
-                                            else:
-                                                st.image("https://via.placeholder.com/150?text=No+Image", use_container_width=True)
-                                            
-                                            # Product info
-                                            st.markdown(f"**{product.get('name', 'Unknown')}**")
-                                            st.caption(f"Supplier: {product.get('supplier', 'N/A')}")
-                                            st.caption(f"Type: {product.get('product_type', 'N/A')}")
-                                            
-                                            similarity = product.get('similarity', 0)
-                                            st.progress(similarity, text=f"Match: {similarity:.0%}")
+                                # Display products in grid (5 per row)
+                                COLS_PER_ROW = 5
+                                for row_start in range(0, len(results), COLS_PER_ROW):
+                                    row_items = results[row_start:row_start + COLS_PER_ROW]
+                                    cols = st.columns(COLS_PER_ROW)
+                                    for i, product in enumerate(row_items):
+                                        with cols[i]:
+                                            with st.container():
+                                                # Thumbnail
+                                                thumb_url = product.get('thumbnail_url')
+                                                if thumb_url:
+                                                    try:
+                                                        st.image(thumb_url, width="stretch")
+                                                    except:
+                                                        st.image("https://via.placeholder.com/150?text=No+Image", width="stretch")
+                                                else:
+                                                    st.image("https://via.placeholder.com/150?text=No+Image", width="stretch")
+                                                
+                                                # Product info
+                                                st.markdown(f"**{product.get('name', 'Unknown')}**")
+                                                st.caption(f"Supplier: {product.get('supplier', 'N/A')}")
+                                                st.caption(f"Type: {product.get('product_type', 'N/A')}")
+                                                
+                                                similarity = product.get('similarity', 0)
+                                                st.progress(similarity, text=f"Match: {similarity:.0%}")
                             else:
                                 st.info(f"No products found for {slot_name}")
                         
