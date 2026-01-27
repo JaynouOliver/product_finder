@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+
+# Environment
+.env
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Output
+output_masks/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Streamlit secrets (keep config.toml, ignore secrets)
+.streamlit/secrets.toml

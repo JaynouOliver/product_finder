@@ -1,0 +1,10 @@
+inference
+inference-sdk
+opencv-python-headless
+numpy
+pycocotools
+python-dotenv
+requests
+psycopg2-binary
+streamlit
+Pillow

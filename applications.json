@@ -1,0 +1,21 @@
+[
+  {"app": "Floors", "default": true},
+  {"app": "Walls", "default": true},
+  {"app": "Worktop / Surface", "default": true},
+  {"app": "Ceilings", "default": false},
+  {"app": "Upholstery", "default": false},
+  {"app": "Curtain", "default": false},
+  {"app": "Curtains", "default": false},
+  {"app": "Decor", "default": false},
+  {"app": "Wallpaper / Wallcovering", "default": false},
+  {"app": "Outdoor Fabric", "default": false},
+  {"app": "Outdoor Paver", "default": false},
+  {"app": "Fixtures", "default": false},
+  {"app": "Faucet / Tap", "default": false},
+  {"app": "Handle", "default": false},
+  {"app": "Knob", "default": false},
+  {"app": "Switch", "default": false},
+  {"app": "Stair Rod", "default": false},
+  {"app": "Other Hardware", "default": false},
+  {"app": "Board Accessory", "default": false}
+]
