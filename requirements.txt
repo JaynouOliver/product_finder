@@ -1,3 +1,4 @@
+# Modal SAM3 integration - v2
 inference
 inference-sdk
 opencv-python-headless
