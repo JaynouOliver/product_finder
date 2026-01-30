@@ -78,25 +78,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def load_applications():
-    """Load application types from JSON config."""
-    config_path = Path(__file__).parent / "applications.json"
-    if config_path.exists():
-        with open(config_path) as f:
-            return json.load(f)
-    # Fallback defaults
-    return [
-        {"app": "Floors", "default": True},
-        {"app": "Walls", "default": True},
-        {"app": "Worktop / Surface", "default": True},
-        {"app": "Ceilings", "default": False},
-        {"app": "Upholstery", "default": False},
-    ]
 
 
-def run_pipeline_local(image_path: str, slots: list, region: list = None, price: int = None):
+
+def run_pipeline_local(image_path: str, region: list = None, price: int = None):
     """
     Run the pipeline locally. Returns result and segment images.
+    
+    Modal SAM3 auto-detects segments - no prompts/slots needed!
     
     Includes fallback logic:
     - If avg confidence < 0.4 OR no segments found → use fallback
@@ -110,7 +99,6 @@ def run_pipeline_local(image_path: str, slots: list, region: list = None, price:
     FALLBACK_THRESHOLD = 0.4  # Trigger fallback if avg confidence below this
     
     config = PipelineConfig(
-        default_slots=slots,
         results_per_slot=10,
         region=region,
         price=price
@@ -265,75 +253,40 @@ def _run_fallback_search(finder, objects, embeddings, region, price):
 
 
 def main():
-    st.title("Product Finder V2")
-    st.markdown("Find real materials from concept room images")
-    
-    # Load application types
-    applications = load_applications()
+    st.title("🏠 Product Finder V2")
+    st.markdown("*Upload a room image and discover matching products automatically*")
     
     # Sidebar configuration
     with st.sidebar:
-        st.header("Configuration")
-        
-        st.divider()
-        
-        # Application/Slot selection with checkboxes
-        st.subheader("Applications to Detect")
-        st.caption("Select surface types or add custom ones")
-        
-        selected_apps = []
-        
-        # Create checkboxes for each application
-        for app_config in applications:
-            app_name = app_config["app"].strip()
-            is_default = app_config.get("default", False)
-            
-            if st.checkbox(app_name, value=is_default, key=f"app_{app_name}"):
-                selected_apps.append(app_name)
-        
-        # Custom applications input
-        st.divider()
-        custom_apps = st.text_input(
-            "Custom Applications",
-            placeholder="e.g., Sofa, Carpet, Rug",
-            help="Add custom surface types (comma-separated)"
-        )
-        if custom_apps:
-            custom_list = [app.strip() for app in custom_apps.split(",") if app.strip()]
-            selected_apps.extend(custom_list)
-        
-        if selected_apps:
-            st.caption(f"Selected: {', '.join(selected_apps)}")
-        
-        st.divider()
+        st.header("⚙️ Settings")
         
         # Filters
-        st.subheader("Filters")
+        st.subheader("🔍 Filters")
         
         region_options = st.multiselect(
-            "Region",
+            "🌍 Region",
             ["US", "EU", "UK", "APAC"],
             default=[]
         )
         region = region_options if region_options else None
         
         price = st.selectbox(
-            "Price Tier",
+            "💰 Price Tier",
             [None, 1, 2, 3, 4, 5],
-            format_func=lambda x: "Any" if x is None else f"Tier {x}"
+            format_func=lambda x: "💰 Any Price" if x is None else f"💰 Tier {x}"
         )
         
         st.divider()
         
         # Info
-        with st.expander("About"):
+        with st.expander("ℹ️ How it works"):
             st.markdown("""
-            **Product Finder V2** uses AI to:
-            1. Segment your room image (SAM3)
-            2. Generate visual embeddings (Voyage AI)
-            3. Find matching products (pgvector)
+            **Product Finder V2** uses AI to automatically:
+            1. 🎯 **Detect segments** in your image (Modal SAM3)
+            2. 🧠 **Generate embeddings** for each segment (Voyage AI)
+            3. 🔎 **Find matching products** from our library (pgvector)
             
-            Processing takes ~10-15 seconds.
+            ⚡ Processing takes ~5-8 seconds.
             """)
     
     # Main content
@@ -379,34 +332,30 @@ def main():
             st.image(image, caption="Input Image", width="stretch")
             
             # Process button
-            if st.button("Find Products", type="primary"):
-                if not selected_apps:
-                    st.error("Please select at least one application type")
-                else:
-                    with st.spinner("Processing... This may take 10-15 seconds"):
-                        try:
-                            start_time = time.time()
-                            
-                            result, segment_images = run_pipeline_local(
-                                image_path=image_source,
-                                slots=selected_apps,
-                                region=region,
-                                price=price
-                            )
-                            result_dict = result.to_dict()
-                            
-                            elapsed = time.time() - start_time
-                            
-                            # Store in session state
-                            st.session_state['result'] = result_dict
-                            st.session_state['elapsed'] = elapsed
-                            st.session_state['segments'] = segment_images
-                            st.rerun()
-                            
-                        except Exception as e:
-                            st.error(f"Error: {str(e)}")
-                            import traceback
-                            st.code(traceback.format_exc())
+            if st.button("🚀 Find Products", type="primary", use_container_width=True):
+                with st.spinner("🔄 Processing... AI is analyzing your image (~5-8s)"):
+                    try:
+                        start_time = time.time()
+                        
+                        result, segment_images = run_pipeline_local(
+                            image_path=image_source,
+                            region=region,
+                            price=price
+                        )
+                        result_dict = result.to_dict()
+                        
+                        elapsed = time.time() - start_time
+                        
+                        # Store in session state
+                        st.session_state['result'] = result_dict
+                        st.session_state['elapsed'] = elapsed
+                        st.session_state['segments'] = segment_images
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"Error: {str(e)}")
+                        import traceback
+                        st.code(traceback.format_exc())
     
     with col2:
         st.subheader("Results")
