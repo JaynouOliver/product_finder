@@ -48,6 +48,9 @@ VOYAGE_MODEL = "voyage-multimodal-3.5"
 DEFAULT_JPEG_QUALITY = 95
 CROP_PADDING = 20
 
+# Modal SAM3 Configuration
+MODAL_SAM3_URL = "https://mattoboard--sam3-segmentation-fastapi-app.modal.run/"
+
 # Output directories
 OUTPUT_DIR = "output_masks"
 VOYAGE_READY_DIR = "voyage_ready"

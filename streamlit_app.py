@@ -120,12 +120,11 @@ def run_pipeline_local(image_path: str, slots: list, region: list = None, price:
     total_start = time.time()
     timing = {}
     
-    # Step 1: Run segmentation ONCE
+    # Step 1: Run Modal SAM3 segmentation (auto-detects segments, no prompts needed)
     t0 = time.time()
     segmented_objects = finder.segmenter.segment_image(
         image_source=image_path,
-        prompts=slots,
-        use_cache=True,
+        top_k=20,
         save_outputs=False
     )
     timing['sam3_segmentation'] = time.time() - t0

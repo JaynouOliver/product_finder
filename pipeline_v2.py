@@ -7,7 +7,7 @@ ALGORITHM OVERVIEW
 
 Goal: Find real materials from our product library based on a concept room image.
 
-Input:  f(image_url, refine_params) where refine_params = {slots, region, price}
+Input:  f(image_url, refine_params) where refine_params = {region, price}
 Output: { "Floor": [3 products], "Wall": [3 products], ... } (~12 total results)
 
 ================================================================================
@@ -18,15 +18,15 @@ Step 1: IMAGE DOWNLOAD (if URL provided)
         - Download image from URL to temp file
         - Latency: ~0.5-1s (depends on image size/network)
 
-Step 2: SAM3 SEGMENTATION (Roboflow Serverless API)
-        - Input: Image + text prompts (e.g., ["Floor", "Wall", "Worktop"])
-        - Process: Segment-Anything-Model v3 with text-prompted segmentation
-        - Output: RLE masks + confidence scores for each detected surface
-        - Post-process: Decode masks, crop segments, convert to base64
-        - Latency: ~8-10s (external API, biggest bottleneck)
+Step 2: SAM3 SEGMENTATION (Modal GPU Endpoint)
+        - Input: Image only (auto-detects segments, no prompts needed!)
+        - Process: Segment-Anything-Model v3 with automatic object detection
+        - Output: Polygon masks + labels + scores for each detected segment
+        - Post-process: Convert polygons to masks, crop segments, base64 encode
+        - Latency: ~3-5s (self-hosted on Modal GPU)
 
 Step 3: VOYAGE EMBEDDINGS (Voyage AI API)
-        - Input: Cropped segment images (base64) + slot name text
+        - Input: Cropped segment images (base64) + segment label text
         - Model: voyage-multimodal-3.5 (1024-dim vectors)
         - Process: Batch request for all segments
         - Output: Embedding vectors per segment
@@ -47,7 +47,7 @@ Step 5: RESPONSE ASSEMBLY
         - Latency: <0.1s
 
 ================================================================================
-TOTAL LATENCY: ~10-13s 
+TOTAL LATENCY: ~5-8s (improved from ~10-13s with Roboflow)
 ================================================================================
 
 FALLBACK LOGIC:
@@ -56,16 +56,10 @@ FALLBACK LOGIC:
         2. If insufficient: Whole-image similarity search (12 mixed results)
     - Low confidence slots (< 0.3) are hidden from response
 
-OPTIMIZATION NOTES:
-    - SAM3 uses Roboflow cache (use_cache=True) for repeated images
-    - Voyage embeddings sent as batch (not individual requests)
-    - Supabase search runs in parallel across slots (ThreadPoolExecutor)
-    - To achieve <5s latency, self-hosted SAM3 on GPU is required
-
 ================================================================================
 
 Usage:
-    python pipeline_v2.py --image image.jpg --slots Floor Wall Worktop
+    python pipeline_v2.py --image image.jpg
     python pipeline_v2.py --image image.jpg --region US EU --results-per-slot 3
 """
 
@@ -77,7 +71,7 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, asdict
 from concurrent.futures import ThreadPoolExecutor
 
-from sam_segmentation import SAM3Segmenter, SegmentedObject
+from sam_segmentation import ModalSAM3Segmenter, SegmentedObject
 from voyage_embeddings import VoyageEmbeddings, EmbeddingResult
 from supabase_search import SupabaseSearch, SlotResult, SearchResult
 from config import OUTPUT_DIR
@@ -142,9 +136,9 @@ class ProductFinderV2:
         self._search = None
     
     @property
-    def segmenter(self) -> SAM3Segmenter:
+    def segmenter(self) -> ModalSAM3Segmenter:
         if self._segmenter is None:
-            self._segmenter = SAM3Segmenter()
+            self._segmenter = ModalSAM3Segmenter()
         return self._segmenter
     
     @property
@@ -189,17 +183,20 @@ class ProductFinderV2:
         print(f"[V2 Pipeline] Slots: {slots}")
         print("-" * 50)
         
-        # Step 1: SAM3 Segmentation (supports both file paths and URLs)
+        # Step 1: Modal SAM3 Segmentation (auto-detects segments, no prompts needed)
         t0 = time.time()
-        print("[Step 1] Running SAM3 segmentation...")
+        print("[Step 1] Running Modal SAM3 segmentation...")
         segmented_objects = self.segmenter.segment_image(
             image_source=image_source,
-            prompts=slots,
-            use_cache=True,
+            top_k=20,
             save_outputs=False
         )
         timing['sam3_segmentation'] = time.time() - t0
         print(f"  Segmented {len(segmented_objects)} objects in {timing['sam3_segmentation']:.2f}s")
+        
+        # Log detected segments
+        for obj in segmented_objects:
+            print(f"    - {obj.class_name}: {obj.confidence:.0%}")
         
         # Check if we need fallback
         avg_confidence = sum(obj.confidence for obj in segmented_objects) / max(len(segmented_objects), 1)
